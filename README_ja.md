@@ -153,13 +153,7 @@ if (lump_device_is_connected()) {
 | Type | 説明 |
 | --- | --- |
 | `LUMP_SYSTEM` | システムメッセージ |
-| `LUMP_TYPE_1` | ユーザー定義 |
-| `LUMP_TYPE_2` | ユーザー定義 |
-| `LUMP_TYPE_3` | ユーザー定義 |
-| `LUMP_TYPE_4` | ユーザー定義 |
-| `LUMP_TYPE_5` | ユーザー定義 |
-| `LUMP_TYPE_6` | ユーザー定義 |
-| `LUMP_TYPE_7` | ユーザー定義 |
+| `LUMP_TYPE_1`～`LUMP_TYPE_7` | ユーザー定義 |
 
 アプリケーションでは用途に応じて自由に割り当てることができます。
 

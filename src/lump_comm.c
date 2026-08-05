@@ -280,6 +280,11 @@ void lump_device_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
     lump_slots_report(type, mode, sensorID, v1, v2, v3, v4);
 }
 
+void lump_device_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sequence, uint8_t sensorID,
+                         int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
+    lump_slots_calib(type, mode, sequence, sensorID, v1, v2, v3, v4);
+}
+
 void lump_device_get_command(uint8_t out[LUMP_PAYLOAD_LEN]) {
     if (xSemaphoreTake(g_rx_mutex, portMAX_DELAY) == pdTRUE) {
         memcpy(out, g_rx_command, LUMP_PAYLOAD_LEN);

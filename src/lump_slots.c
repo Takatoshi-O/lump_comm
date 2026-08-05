@@ -41,6 +41,24 @@ void lump_slots_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
     }
 }
 
+void lump_slots_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sequence, uint8_t sensorID,
+                        int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
+    if (type >= LUMP_TYPE_MAX) return;
+
+    lump_slot_t *slot = &s_slots[type];
+    if (xSemaphoreTake(slot->mutex, portMAX_DELAY) == pdTRUE) {
+        slot->seq = sequence;
+        slot->mode = mode & 0x1F; /* 下位5bitのみ使う */
+        slot->sensorID = sensorID;
+        slot->values[0] = v1;
+        slot->values[1] = v2;
+        slot->values[2] = v3;
+        slot->values[3] = v4;
+        slot->dirty = true;
+        xSemaphoreGive(slot->mutex);
+    }
+}
+
 /* slotの内容をパケット形式 (byte0=種別+モード, byte1=センサーID, byte2=seq, byte3-10=int16x4) にパックする */
 static void pack_slot(lump_sensor_type_t type, const lump_slot_t *slot, uint8_t out[LUMP_PAYLOAD_LEN]) {
     out[0] = (uint8_t)((type & 0x07) << 5) | (slot->mode & 0x1F);

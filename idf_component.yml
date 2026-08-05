@@ -1,0 +1,8 @@
+version: "0.1.0"
+
+description: LUMP communication library for ESP-IDF
+
+url: https://github.com/<あなたのアカウント>/lump_comm
+
+dependencies:
+  idf: ">=6.0.1"

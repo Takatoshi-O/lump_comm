@@ -1,0 +1,15 @@
+idf_component_register(
+    SRCS
+        "src/lump_comm.c"
+        "src/lump_message.c"
+        "src/lump_bitbang.c"
+        "src/lump_slots.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_uart
+        freertos
+)

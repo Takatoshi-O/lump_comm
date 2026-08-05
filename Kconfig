@@ -1,0 +1,13 @@
+menu "LUMP Communication"
+
+config LUMP_TX_GPIO
+    int "TX GPIO"
+    default 8
+    range 0 48
+
+config LUMP_RX_GPIO
+    int "RX GPIO"
+    default 44
+    range 0 48
+
+endmenu

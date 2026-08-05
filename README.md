@@ -149,13 +149,7 @@ The library currently defines the following sensor categories.
 | Type          | Description         |
 | ------------- | ------------------- |
 | `LUMP_SYSTEM` | System messages     |
-| `LUMP_TYPE_1` | User-defined |
-| `LUMP_TYPE_2` | User-defined |
-| `LUMP_TYPE_3` | User-defined |
-| `LUMP_TYPE_4` | User-defined |
-| `LUMP_TYPE_5` | User-defined |
-| `LUMP_TYPE_6` | User-defined |
-| `LUMP_TYPE_7` | User-defined |
+| `LUMP_TYPE_1`～`LUMP_TYPE_7` | User-defined |
 
 Applications are free to assign these sensor types as needed.
 

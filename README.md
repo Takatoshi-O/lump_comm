@@ -1,3 +1,4 @@
+For Japanese document please see README_ja.md. 日本語版は，README_ja.md を参照
 # LUMP Communication Library
 
 LUMP Communication Library is an ESP-IDF component that implements communication between an ESP32 and a LEGO® SPIKE hub using the LEGO UART Message Protocol (LUMP).

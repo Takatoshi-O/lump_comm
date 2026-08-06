@@ -4,6 +4,7 @@ idf_component_register(
         "src/lump_message.c"
         "src/lump_bitbang.c"
         "src/lump_slots.c"
+        "src/lump_command.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

@@ -19,7 +19,7 @@ void lump_slots_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
 
 /* 指定したセンサー種別の棚に書き込む(シーケンス番号を任意に設定する) */
 void lump_slots_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sequence, uint8_t sensorID,
-                        int16_t v1, int16_t v2, int16_t v3, int16_t v4)
+                        int16_t v1, int16_t v2, int16_t v3, int16_t v4);
 
 
 /*

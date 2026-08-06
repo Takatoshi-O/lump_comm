@@ -3,6 +3,7 @@
 #include "lump_message.h"
 #include "lump_bitbang.h"
 #include "lump_slots.h"
+#include "lump_command.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -204,17 +205,24 @@ static void data_phase(void) {
             } else if (len > 0) {
                 uint8_t msg_type    = header & LUMP_MSG_TYPE_MASK;
                 uint8_t cmd_or_mode = header & LUMP_MSG_LOWER_MASK;
-                if (msg_type == LUMP_MSG_CMD && cmd_or_mode == LUMP_CMD_EXT_MODE) {
+                if (msg_type == LUMP_MSG_CMD && cmd_or_mode == LUMP_CMD_EXT_MODE) 
+                {
                     pending_ext_mode = payload[0];
                     have_pending_ext_mode = true;
-                } else if (msg_type == LUMP_MSG_DATA) {
+                } 
+                else if (msg_type == LUMP_MSG_DATA) 
+                {
                     uint8_t actual_mode = cmd_or_mode + (have_pending_ext_mode ? pending_ext_mode : 0);
                     have_pending_ext_mode = false;
-                    if (actual_mode == 0 && len >= LUMP_PAYLOAD_LEN) {
-                        if (xSemaphoreTake(g_rx_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    if (actual_mode == 0 && len >= LUMP_PAYLOAD_LEN) 
+                    {
+                        if (xSemaphoreTake(g_rx_mutex, pdMS_TO_TICKS(10)) == pdTRUE) 
+                        {
                             memcpy(g_rx_command, payload, LUMP_PAYLOAD_LEN);
                             xSemaphoreGive(g_rx_mutex);
                         }
+
+                        lump_command_push(payload);
                     }
                 }
             }
@@ -261,6 +269,7 @@ static void lump_device_task(void *arg) {
 void lump_device_start(void) {
     g_rx_mutex = xSemaphoreCreateMutex();
     lump_slots_init();
+    lump_command_init();
     if (CONFIG_FREERTOS_NUMBER_OF_CORES > 1)
     {
         xTaskCreatePinnedToCore(lump_device_task, "lump_device", 4096, NULL, 10, NULL, 1);

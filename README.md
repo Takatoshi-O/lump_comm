@@ -1,77 +1,52 @@
-For Japanese document please see [README_ja.md](README_ja.md).
-日本語版は，[README_ja.md](README_ja.md) を参照
-# LUMP Communication Library
+# lump_comm
 
-LUMP Communication Library is an ESP-IDF component that implements communication between an ESP32 and a LEGO® SPIKE hub using the LEGO UART Message Protocol (LUMP).
+`lump_comm` is the transport-layer ESP-IDF component used to communicate with a LEGO SPIKE hub using the LUMP UART message protocol.
 
-The library handles the communication protocol, handshake, connection management, and packet transmission so that application code only needs to report sensor values.
+## Responsibilities
 
----
+The component handles the protocol transport rather than sensor-specific behavior:
 
-## Features
+- LUMP handshake and connection management
+- Low-speed bit-banged signaling during synchronization/handshake
+- High-speed UART data communication
+- Sensor data buffering and round-robin transmission
+- Incoming command buffering
+- LUMP message construction and checksum calculation
 
-* Implements the LUMP communication protocol
-* Automatic handshake and connection management
-* Background communication task
-* Simple API for reporting sensor data
-* Supports multiple sensor types and modes
-* Thread-safe sensor data update
+Sensor-specific logic belongs in the separate `lump_comm_sensors` component.
 
----
+## Directory structure
 
-## Requirements
-
-* ESP-IDF 6.0.1 or later
-* ESP32 series MCU
-* UART connection to a LEGO SPIKE hub
-
----
-
-## Component Structure
-
-```
+```text
 lump_comm/
 ├── include/
-│   └── lump_comm.h
+│   ├── lump_comm.h
+│   └── lump_command.h
 ├── src/
 │   ├── lump_comm.c
-│   ├── lump_message.c
-│   ├── lump_bitbang.c
-│   └── lump_slots.c
+│   ├── lump_message.c/.h
+│   ├── lump_bitbang.c/.h
+│   ├── lump_slots.c/.h
+│   └── lump_protocol.h
+├── Kconfig
 ├── CMakeLists.txt
-├── idf_component.yml
-└── README.md
+└── idf_component.yml
 ```
-
----
 
 ## Configuration
 
-Run
+Open `idf.py menuconfig` and select **Component config -> LUMP Communication**.
 
-```bash
-idf.py menuconfig
-```
+| Option | Default | Description |
+|---|---:|---|
+| `LUMP_TX_GPIO` | 8 | TX GPIO |
+| `LUMP_RX_GPIO` | 44 | RX GPIO |
 
-and navigate to
-
-```
-Component config
-    → LUMP Communication
-```
-
-You can configure
-
-- TX GPIO
-- RX GPIO
-
-Modify these values to match your hardware configuration.
-
----
+The public header converts these Kconfig values to `LUMP_GPIO_TX` and `LUMP_GPIO_RX`.
 
 ## Initialization
 
-Start the communication task once from `app_main()`.
+Start the communication task once:
 
 ```c
 void app_main(void)
@@ -80,24 +55,17 @@ void app_main(void)
 }
 ```
 
-The library creates its own background task that manages:
+The transport layer then handles the background protocol state machine. Application code normally does not need to manage the handshake directly.
 
-* Handshake
-* Device initialization
-* Connection monitoring
-* Data transmission
+## Reporting sensor data
 
----
-
-## Sending Sensor Data
-
-Sensor tasks should periodically report values using:
+Use `lump_device_report()` to publish the latest value for a sensor type and sensor instance.
 
 ```c
 lump_device_report(
-    type,
-    mode,
-    sensorID,
+    LUMP_TYPE_1,
+    1,
+    0,
     value1,
     value2,
     value3,
@@ -105,62 +73,54 @@ lump_device_report(
 );
 ```
 
-### Parameters
+`lump_sensor_type_t` separates sensor categories, while `mode` identifies the meaning of the four signed 16-bit values within that category.
 
-| Parameter         | Description                        |
-| ----------------- | ---------------------------------- |
-| `type`            | Sensor type (`lump_sensor_type_t`) |
-| `mode`            | Sensor mode (0–31)                 |
-| `sensorID`        | Sensor identifier                  |
-| `value1`–`value4` | Four signed 16-bit sensor values   |
+The internal slot layer keeps data for each sensor type independently and selects dirty slots in round-robin order for transmission.
 
-Each sensor type has its own storage area, so reporting one sensor does not overwrite data from another sensor type.
-
----
-
-## Checking Connection Status
+## Connection state
 
 ```c
 if (lump_device_is_connected()) {
-    // Device is connected
+    // SPIKE DATA phase is connected.
 }
 ```
 
----
+## Incoming commands
 
-## Sensor Types
+The command module keeps up to `LUMP_COMMAND_QUEUE_CAPACITY` (=16) pending commands in a ring buffer. `lump_command_push()` parses an incoming fixed-length payload, and `lump_command_pop()` consumes the oldest pending command.
 
-The library currently defines the following sensor categories.
+The higher-level `lump_comm_sensors` component uses this queue through its command-dispatch layer.
 
-| Type          | Description         |
-| ------------- | ------------------- |
-| `LUMP_SYSTEM` | System messages     |
-| `LUMP_TYPE_1`～`LUMP_TYPE_7` | User-defined |
+## Protocol layers
 
-Applications are free to assign these sensor types as needed.
+The internal headers separate the implementation into small responsibilities:
 
----
+- `lump_protocol.h`: protocol constants and message field values
+- `lump_message.h`: message packing, payload length, and checksum
+- `lump_bitbang.h`: low-speed GPIO signaling
+- `lump_slots.h`: sensor-type transmission slots
+- `lump_command.h`: incoming command queue
+
+The current transport configuration uses 2400bps during synchronization and 115200bps during the normal run phase.
+
+## Dependencies
+
+- `esp_driver_gpio`
+- `esp_driver_uart`
+- `freertos`
 
 ## Public API
 
-```c
-void lump_device_start(void);
+- `lump_device_start()`
+- `lump_device_is_connected()`
+- `lump_device_report()`
+- `lump_command_init()`
+- `lump_command_push()`
+- `lump_command_pop()`
+- `lump_command_count()`
 
-bool lump_device_is_connected(void);
-
-void lump_device_report(
-    lump_sensor_type_t type,
-    uint8_t mode,
-    uint8_t sensorID,
-    int16_t v1,
-    int16_t v2,
-    int16_t v3,
-    int16_t v4
-);
-```
-
----
+The command APIs are exposed publicly because the sensor layer builds on them.
 
 ## License
 
-This project is released under the MIT License.
+The component includes an MIT License file.

@@ -1,77 +1,52 @@
-# LUMP Communication Library
+# lump_comm
 
-LUMP Communication Library は、ESP32 と LEGO® SPIKE Hub 間の通信を実現する ESP-IDF コンポーネントです。
+`lump_comm` は、LEGO SPIKE HubとLUMP UART Message Protocolで通信するためのESP-IDFコンポーネントです。
 
-LEGO UART Message Protocol（LUMP）に基づいた通信プロトコル、ハンドシェイク、接続管理、パケット送信処理をライブラリ側で処理します。
+## 役割
 
-アプリケーション側では、センサー値を通知するだけで SPIKE Hub との通信を利用できます。
+このコンポーネントはセンサー固有の処理ではなく、通信トランスポート層を担当します。
 
----
+- LUMPハンドシェイクと接続管理
+- 同期・ハンドシェイク時の低速ビットバンギング通信
+- 高速UARTによるデータ通信
+- センサーデータのバッファリングとラウンドロビン送信
+- 受信コマンドのキュー管理
+- LUMPメッセージ生成とチェックサム計算
 
-## 特徴
+センサー固有の処理は別コンポーネントの `lump_comm_sensors` が担当します。
 
-* LUMP 通信プロトコルを実装
-* 自動ハンドシェイクおよび接続管理
-* バックグラウンド通信タスクによる動作
-* センサーデータ送信用のシンプルな API
-* 複数のセンサータイプ・モードに対応
-* スレッドセーフなセンサー値更新
+## ディレクトリ構成
 
----
-
-## 必要環境
-
-* ESP-IDF 6.0.1 以降
-* ESP32 シリーズ MCU
-* LEGO SPIKE Hub と接続する UART インターフェース
-
----
-
-## コンポーネント構成
-
-```
+```text
 lump_comm/
 ├── include/
-│   └── lump_comm.h
+│   ├── lump_comm.h
+│   └── lump_command.h
 ├── src/
 │   ├── lump_comm.c
-│   ├── lump_message.c
-│   ├── lump_bitbang.c
-│   └── lump_slots.c
+│   ├── lump_message.c/.h
+│   ├── lump_bitbang.c/.h
+│   ├── lump_slots.c/.h
+│   └── lump_protocol.h
+├── Kconfig
 ├── CMakeLists.txt
-├── idf_component.yml
-└── README.md
+└── idf_component.yml
 ```
-
----
 
 ## 設定
 
-以下のコマンドを実行します。
+`idf.py menuconfig` の **Component config -> LUMP Communication** から設定します。
 
-```bash
-idf.py menuconfig
-```
+| 項目 | デフォルト | 説明 |
+|---|---:|---|
+| `LUMP_TX_GPIO` | 8 | TX GPIO |
+| `LUMP_RX_GPIO` | 44 | RX GPIO |
 
-次の項目へ移動します。
-
-```
-Component config
-    → LUMP Communication
-```
-
-以下の項目を設定できます。
-
-- TX GPIO
-- RX GPIO
-
-使用するハードウェア構成に合わせて GPIO 番号を変更してください。
-
----
+公開ヘッダーでは、このKconfig値を `LUMP_GPIO_TX` / `LUMP_GPIO_RX` として利用します。
 
 ## 初期化
 
-`app_main()` 内で一度だけ通信タスクを開始します。
+通信タスクは1回だけ起動します。
 
 ```c
 void app_main(void)
@@ -80,24 +55,17 @@ void app_main(void)
 }
 ```
 
-ライブラリは内部でバックグラウンドタスクを生成し、以下の処理を自動的に管理します。
+以降のハンドシェイクや通信状態遷移はバックグラウンドで処理されます。通常、アプリケーション側でハンドシェイクを直接管理する必要はありません。
 
-* ハンドシェイク
-* デバイス初期化
-* 接続状態監視
-* センサーデータ送信
+## センサーデータ送信
 
----
-
-## センサーデータの送信
-
-センサー処理タスクから、以下の API を使用して定期的に値を通知します。
+センサー種別とセンサーインスタンスの最新値を `lump_device_report()` で通知します。
 
 ```c
 lump_device_report(
-    type,
-    mode,
-    sensorID,
+    LUMP_TYPE_1,
+    1,
+    0,
     value1,
     value2,
     value3,
@@ -105,66 +73,54 @@ lump_device_report(
 );
 ```
 
-### 引数
+`lump_sensor_type_t` がセンサー分類を、`mode` がその分類内の4つの16bit値の意味を表します。
 
-| 引数 | 説明 |
-| --- | --- |
-| `type` | センサータイプ（`lump_sensor_type_t`） |
-| `mode` | センサーモード（0～31） |
-| `sensorID` | センサー識別番号 |
-| `value1`～`value4` | 4つの符号付き16bitセンサー値 |
+内部のスロット層ではセンサー種別ごとに独立した保存領域を持ち、更新されたスロットをラウンドロビン順で送信します。
 
-各センサータイプごとに独立した保存領域を持っています。
-
-そのため、あるセンサータイプの値を更新しても、別のセンサータイプのデータが上書きされることはありません。
-
----
-
-## 接続状態の確認
-
-現在 SPIKE Hub と接続されているか確認できます。
+## 接続状態
 
 ```c
 if (lump_device_is_connected()) {
-    // 接続中
+    // SPIKEとのDATAフェーズが確立しています。
 }
 ```
 
----
+## 受信コマンド
 
-## センサータイプ
+コマンドモジュールは、未処理コマンドを最大 `LUMP_COMMAND_QUEUE_CAPACITY` (=16) 件リングバッファに保持します。`lump_command_push()` が受信パケットを解析してキューへ追加し、`lump_command_pop()` が最も古いものから取り出します。
 
-現在、以下のセンサータイプを定義しています。
+上位の `lump_comm_sensors` は、このキューをコマンドディスパッチ機構経由で利用します。
 
-| Type | 説明 |
-| --- | --- |
-| `LUMP_SYSTEM` | システムメッセージ |
-| `LUMP_TYPE_1`～`LUMP_TYPE_7` | ユーザー定義 |
+## プロトコル層
 
-アプリケーションでは用途に応じて自由に割り当てることができます。
+内部ヘッダーは責務ごとに分かれています。
 
----
+- `lump_protocol.h` : プロトコル定数とメッセージフィールド値
+- `lump_message.h` : メッセージ組み立て、ペイロード長、チェックサム
+- `lump_bitbang.h` : 低速GPIO通信
+- `lump_slots.h` : センサー種別ごとの送信スロット
+- `lump_command.h` : 受信コマンドキュー
 
-## 公開 API
+現在の通信設定では同期フェーズに2400bps、通常のデータフェーズに115200bpsを使用します。
 
-```c
-void lump_device_start(void);
+## 依存コンポーネント
 
-bool lump_device_is_connected(void);
+- `esp_driver_gpio`
+- `esp_driver_uart`
+- `freertos`
 
-void lump_device_report(
-    lump_sensor_type_t type,
-    uint8_t mode,
-    uint8_t sensorID,
-    int16_t v1,
-    int16_t v2,
-    int16_t v3,
-    int16_t v4
-);
-```
+## 公開API
 
----
+- `lump_device_start()`
+- `lump_device_is_connected()`
+- `lump_device_report()`
+- `lump_command_init()`
+- `lump_command_push()`
+- `lump_command_pop()`
+- `lump_command_count()`
+
+コマンドAPIは、上位のセンサー層が利用するため公開されています。
 
 ## ライセンス
 
-このプロジェクトは MIT License のもとで公開されています。
+コンポーネントにはMIT Licenseファイルが含まれています。

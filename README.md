@@ -118,20 +118,6 @@ Each sensor type has its own storage area, so reporting one sensor does not over
 
 ---
 
-## Receiving Commands
-
-Commands sent from the SPIKE hub can be obtained with:
-
-```c
-uint8_t cmd[LUMP_PAYLOAD_LEN];
-
-lump_device_get_command(cmd);
-```
-
-`cmd` must point to a buffer of `LUMP_PAYLOAD_LEN` bytes.
-
----
-
 ## Checking Connection Status
 
 ```c
@@ -170,10 +156,6 @@ void lump_device_report(
     int16_t v2,
     int16_t v3,
     int16_t v4
-);
-
-void lump_device_get_command(
-    uint8_t out[LUMP_PAYLOAD_LEN]
 );
 ```
 

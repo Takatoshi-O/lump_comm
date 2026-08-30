@@ -3,88 +3,104 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#define LUMP_SLOT_BUF_CAPACITY 16
+
 typedef struct {
-    uint8_t seq;
+    lump_sensor_type_t type;
     uint8_t mode;
     uint8_t sensorID;
     int16_t values[4];
-    bool dirty;                 /* まだ一度も送信されていない新しい値がある */
-    SemaphoreHandle_t mutex;
-} lump_slot_t;
+} lump_slot_entry_t;
 
-static lump_slot_t s_slots[LUMP_TYPE_MAX];
-static uint8_t s_rr_cursor = 0;
+/* instance_idごとの分割はやめ、全instance共通の
+ * 16エントリ・ラウンドロビン式リングバッファに一本化 */
+static lump_slot_entry_t s_buf[LUMP_SLOT_BUF_CAPACITY];
+static uint8_t s_head = 0;          /* 次に書き込む位置 */
+static uint8_t s_read_cursor = 0;   /* 次に読み出す位置(最古の未送信) */
+static uint8_t s_count = 0;         /* バッファ内の未送信エントリ数 */
+static SemaphoreHandle_t s_buf_mutex;
 
-void lump_slots_init(void) {
-    for (int i = 0; i < LUMP_TYPE_MAX; i++) {
-        memset(&s_slots[i], 0, sizeof(lump_slot_t));
-        s_slots[i].mutex = xSemaphoreCreateMutex();
+/* 全instance共通のシーケンス番号。ackを除き、実際にデータを
+ * 送信する(pick_nextが呼ばれる)たびにインクリメントする */
+static uint8_t s_seq_counter = 0;
+
+void lump_slots_init(void) 
+{
+    memset(s_buf, 0, sizeof(s_buf));
+    s_head = 0;
+    s_read_cursor = 0;
+    s_count = 0;
+    s_seq_counter = 0;
+    s_buf_mutex = xSemaphoreCreateMutex();
+}
+
+/* リングバッファへの新規エントリ追加(満杯時は最古のエントリを上書き) */
+static void push_entry(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
+                        int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
+    if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
+        lump_slot_entry_t *e = &s_buf[s_head];
+        e->type = type;
+        e->mode = mode & 0x1F; /* 下位5bitのみ使う */
+        e->sensorID = sensorID;
+        e->values[0] = v1;
+        e->values[1] = v2;
+        e->values[2] = v3;
+        e->values[3] = v4;
+
+        s_head = (uint8_t)((s_head + 1) % LUMP_SLOT_BUF_CAPACITY);
+
+        if (s_count < LUMP_SLOT_BUF_CAPACITY) {
+            s_count++;
+        } else {
+            /* 満杯だったので最古のエントリを上書きした
+             * -> 読み出しカーソルもラウンドロビンで一つ進める */
+            s_read_cursor = (uint8_t)((s_read_cursor + 1) % LUMP_SLOT_BUF_CAPACITY);
+        }
+
+        xSemaphoreGive(s_buf_mutex);
     }
-    s_rr_cursor = 0;
 }
 
 void lump_slots_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
-                        int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
+                        int16_t v1, int16_t v2, int16_t v3, int16_t v4) 
+{
     if (type >= LUMP_TYPE_MAX) return;
-
-    lump_slot_t *slot = &s_slots[type];
-    if (xSemaphoreTake(slot->mutex, portMAX_DELAY) == pdTRUE) {
-        slot->seq++;
-        slot->mode = mode & 0x1F; /* 下位5bitのみ使う */
-        slot->sensorID = sensorID;
-        slot->values[0] = v1;
-        slot->values[1] = v2;
-        slot->values[2] = v3;
-        slot->values[3] = v4;
-        slot->dirty = true;
-        xSemaphoreGive(slot->mutex);
-    }
+    push_entry(type, mode, sensorID, v1, v2, v3, v4);
 }
 
-void lump_slots_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sequence, uint8_t sensorID,
-                        int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
-    if (type >= LUMP_TYPE_MAX) return;
 
-    lump_slot_t *slot = &s_slots[type];
-    if (xSemaphoreTake(slot->mutex, portMAX_DELAY) == pdTRUE) {
-        slot->seq = sequence;
-        slot->mode = mode & 0x1F; /* 下位5bitのみ使う */
-        slot->sensorID = sensorID;
-        slot->values[0] = v1;
-        slot->values[1] = v2;
-        slot->values[2] = v3;
-        slot->values[3] = v4;
-        slot->dirty = true;
-        xSemaphoreGive(slot->mutex);
-    }
-}
-
-/* slotの内容をパケット形式 (byte0=種別+モード, byte1=センサーID, byte2=seq, byte3-10=int16x4) にパックする */
-static void pack_slot(lump_sensor_type_t type, const lump_slot_t *slot, uint8_t out[LUMP_PAYLOAD_LEN]) {
-    out[0] = (uint8_t)((type & 0x07) << 5) | (slot->mode & 0x1F);
-    out[1] = slot->sensorID;
-    out[2] = slot->seq;
+/* entryの内容をパケット形式 (byte0=sequence, byte1=種別+モード, byte2=センサーID, byte3-10=int16x4) にパックする */
+static void pack_entry(const lump_slot_entry_t *e, uint8_t seq, uint8_t out[LUMP_PAYLOAD_LEN]) 
+{
+    out[0] = seq;
+    out[1] = (uint8_t)((e->type & 0x07) << 5) | (e->mode & 0x1F);
+    out[2] = e->sensorID;
     for (int i = 0; i < 4; i++) {
-        int16_t v = slot->values[i];
+        int16_t v = e->values[i];
         out[3 + i * 2]     = (uint8_t)(v & 0xFF);        /* リトルエンディアン */
         out[3 + i * 2 + 1] = (uint8_t)((v >> 8) & 0xFF);
     }
 }
 
-bool lump_slots_pick_next(uint8_t out[LUMP_PAYLOAD_LEN]) {
-    for (int i = 0; i < LUMP_TYPE_MAX; i++) {
-        uint8_t idx = (s_rr_cursor + i) % LUMP_TYPE_MAX;
-        lump_slot_t *slot = &s_slots[idx];
+bool lump_slots_pick_next(uint8_t out[LUMP_PAYLOAD_LEN]) 
+{
+    bool ok = false;
 
-        if (!slot->dirty) continue;
+    if (xSemaphoreTake(s_buf_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (s_count > 0) {
+            lump_slot_entry_t *e = &s_buf[s_read_cursor];
 
-        if (xSemaphoreTake(slot->mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            pack_slot((lump_sensor_type_t)idx, slot, out);
-            slot->dirty = false;
-            xSemaphoreGive(slot->mutex);
-            s_rr_cursor = (idx + 1) % LUMP_TYPE_MAX;
-            return true;
+            /* 実際にデータを送信するのでここでシーケンス番号を消費する
+             * (ackハートビートはここを通らないためインクリメントされない) */
+            uint8_t seq = s_seq_counter++;
+            pack_entry(e, seq, out);
+
+            s_read_cursor = (uint8_t)((s_read_cursor + 1) % LUMP_SLOT_BUF_CAPACITY);
+            s_count--;
+            ok = true;
         }
+        xSemaphoreGive(s_buf_mutex);
     }
-    return false;
+
+    return ok;
 }

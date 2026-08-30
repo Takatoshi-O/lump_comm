@@ -2,7 +2,7 @@ version: "0.1.0"
 
 description: LUMP communication library for ESP-IDF
 
-url: https://github.com/<あなたのアカウント>/lump_comm
+url: https://github.com/Takatoshi-O/lump_comm
 
 dependencies:
   idf: ">=6.0.1"

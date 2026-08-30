@@ -120,20 +120,6 @@ lump_device_report(
 
 ---
 
-## コマンド受信
-
-SPIKE Hub から送信されたコマンドは、以下の API で取得できます。
-
-```c
-uint8_t cmd[LUMP_PAYLOAD_LEN];
-
-lump_device_get_command(cmd);
-```
-
-`cmd` は `LUMP_PAYLOAD_LEN` バイトのバッファを指定してください。
-
----
-
 ## 接続状態の確認
 
 現在 SPIKE Hub と接続されているか確認できます。
@@ -174,10 +160,6 @@ void lump_device_report(
     int16_t v2,
     int16_t v3,
     int16_t v4
-);
-
-void lump_device_get_command(
-    uint8_t out[LUMP_PAYLOAD_LEN]
 );
 ```
 

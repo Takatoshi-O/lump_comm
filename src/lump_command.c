@@ -18,9 +18,9 @@ void lump_command_init(void) {
 
 void lump_command_push(const uint8_t raw[LUMP_PAYLOAD_LEN]) {
     lump_command_entry_t entry;
-    entry.type        = (lump_sensor_type_t)((raw[0] >> 5) & 0x07);
-    entry.command      = raw[0] & 0x1F;
-    entry.seq          = raw[1]; /* コマンド用パケットはbyte1=シーケンス番号 */
+    entry.seq          = raw[0]; /* コマンド用パケットはbyte0=シーケンス番号 */
+    entry.type         = (lump_sensor_type_t)((raw[1] >> 5) & 0x07);
+    entry.command      = raw[1] & 0x1F;
     entry.instance_id  = raw[2]; /* コマンド用パケットはbyte2=インスタンスID */
 
     uint8_t lo, hi;

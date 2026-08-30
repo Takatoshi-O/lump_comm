@@ -21,18 +21,29 @@
 
 static const char *TAG = "lump_device";
 
-static uint8_t g_rx_command[LUMP_PAYLOAD_LEN] = {0};
-static SemaphoreHandle_t g_rx_mutex;
-
 /* 何も新しいセンサーデータがない時に送信する
  * (ハートビートとして使う) */
 static const uint8_t ack[LUMP_PAYLOAD_LEN] = {0};
 
 static volatile bool s_connected = false;
 
+/* ===================== RX/TXタスク管理 ===================== */
+
+static TaskHandle_t s_rx_task_handle = NULL;
+static TaskHandle_t s_tx_task_handle = NULL;
+
+/* data_phase中のみtrue。RXタスクがホストタイムアウトを検知したらfalseにし、
+ * TXタスクにも終了を伝える */
+static volatile bool s_session_active = false;
+
+/* RX/TXタスクがそれぞれ終了時に1回ずつgiveする。
+ * 親タスク(lump_device_task)は2回takeしてから uart_driver_delete する */
+static SemaphoreHandle_t s_stage_done_sem;
+
 /* ===================== 起動シーケンス ===================== */
 
-static void log_and_send(const char *label, const uint8_t *buf, int n) {
+static void log_and_send(const char *label, const uint8_t *buf, int n) 
+{
 #if LUMP_DEBUG
     char hex[3 * 40 + 1] = {0};
     int pos = 0;
@@ -45,7 +56,8 @@ static void log_and_send(const char *label, const uint8_t *buf, int n) {
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
-static void send_handshake_sequence(void) {
+static void send_handshake_sequence(void) 
+{
     uint8_t buf[LUMP_MSGBUF_MAX];
     int n;
 
@@ -92,7 +104,8 @@ static void send_handshake_sequence(void) {
 
 /* ===================== 同期フェーズ(ビットバンギング) ===================== */
 
-static bool wait_for_connection(void) {
+static bool wait_for_connection(void) 
+{
     lump_bb_init(LUMP_GPIO_TX, LUMP_GPIO_RX);
 
     ESP_LOGI(TAG, "waiting for host detect pulses...");
@@ -139,7 +152,8 @@ static bool wait_for_connection(void) {
 
 /* ===================== DATAフェーズ(ハードウェアUART, 115200bps) ===================== */
 
-static void init_hw_uart(void) {
+static void init_hw_uart(void) 
+{
     const uart_config_t cfg = {
         .baud_rate  = LUMP_RUN_BAUD,
         .data_bits  = UART_DATA_8_BITS,
@@ -154,7 +168,8 @@ static void init_hw_uart(void) {
 }
 
 static bool hw_receive_message(uint8_t *out_header, uint8_t *out_payload, uint8_t *out_len,
-                                TickType_t timeout) {
+                                TickType_t timeout) 
+{
     uint8_t header;
     if (uart_read_bytes(LUMP_UART_NUM, &header, 1, timeout) != 1) return false;
 
@@ -184,27 +199,26 @@ static bool hw_receive_message(uint8_t *out_header, uint8_t *out_payload, uint8_
     return true;
 }
 
-static void data_phase(void) {
-    init_hw_uart();
-    ESP_LOGI(TAG, "entering data phase (115200 baud, hardware UART)");
-
+/* ---- RXタスク: 受信・コマンド解析・ホストタイムアウト検知 ---- */
+static void lump_rx_task(void *arg) 
+{
     TickType_t last_rx_seen = xTaskGetTickCount();
-    TickType_t last_tx = xTaskGetTickCount();
+    TickType_t last_wake_time = xTaskGetTickCount();
     uint8_t pending_ext_mode = 0;
     bool have_pending_ext_mode = false;
 
     while (1) {
         uint8_t header, payload[32], len;
         bool got = hw_receive_message(&header, payload, &len, pdMS_TO_TICKS(5));
-        bool nack_now = false;
 
         if (got) {
             last_rx_seen = xTaskGetTickCount();
-            if (header == LUMP_BYTE_NACK) {
-                nack_now = true;
-            } else if (len > 0) {
+
+            if (len > 0 && header != LUMP_BYTE_NACK) 
+            {
                 uint8_t msg_type    = header & LUMP_MSG_TYPE_MASK;
                 uint8_t cmd_or_mode = header & LUMP_MSG_LOWER_MASK;
+
                 if (msg_type == LUMP_MSG_CMD && cmd_or_mode == LUMP_CMD_EXT_MODE) 
                 {
                     pending_ext_mode = payload[0];
@@ -214,47 +228,82 @@ static void data_phase(void) {
                 {
                     uint8_t actual_mode = cmd_or_mode + (have_pending_ext_mode ? pending_ext_mode : 0);
                     have_pending_ext_mode = false;
+
                     if (actual_mode == 0 && len >= LUMP_PAYLOAD_LEN) 
                     {
-                        if (xSemaphoreTake(g_rx_mutex, pdMS_TO_TICKS(10)) == pdTRUE) 
-                        {
-                            memcpy(g_rx_command, payload, LUMP_PAYLOAD_LEN);
-                            xSemaphoreGive(g_rx_mutex);
-                        }
-
                         lump_command_push(payload);
                     }
                 }
             }
         }
 
-        if ((xTaskGetTickCount() - last_rx_seen) > pdMS_TO_TICKS(300)) {
+        if ((xTaskGetTickCount() - last_rx_seen) > pdMS_TO_TICKS(300)) 
+        {
             ESP_LOGW(TAG, "host timeout, reconnecting");
-            uart_driver_delete(LUMP_UART_NUM);
-            return;
-        }
-
-        bool interval_elapsed = (xTaskGetTickCount() - last_tx) > pdMS_TO_TICKS(5);
-        if (nack_now || interval_elapsed) {
-            uint8_t payload_buf[LUMP_PAYLOAD_LEN];
-            if (!lump_slots_pick_next(payload_buf)) {
-                /* 新しいデータがなければ、ackをハートビートとして再送する */
-                memcpy(payload_buf, ack, LUMP_PAYLOAD_LEN);
+            s_session_active = false;
+            /* TXタスクが最大5ms待っている状態なら即座に終了判定させる */
+            if (s_tx_task_handle != NULL) 
+            {
+                xTaskNotifyGive(s_tx_task_handle);
             }
+            break;
+        }
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(10));
+    }
 
-            uint8_t buf[LUMP_MSGBUF_MAX];
-            int n = lump_msg_build_cmd_or_data(buf, LUMP_MSG_DATA, LUMP_MODE_0, payload_buf, LUMP_PAYLOAD_LEN);
-            uart_write_bytes(LUMP_UART_NUM, (const char *)buf, n);
-            last_tx = xTaskGetTickCount();
+    s_rx_task_handle = NULL;
+    xSemaphoreGive(s_stage_done_sem);
+    vTaskDelete(NULL);
+}
+
+/* ---- TXタスク: 10ms間隔(またはNACK即時)でのデータ送信 ---- */
+static void lump_tx_task(void *arg) 
+{
+    TickType_t last_wake_time = xTaskGetTickCount();
+
+    while (1) {
+        if (!s_session_active) break;
+
+        uint8_t payload_buf[LUMP_PAYLOAD_LEN];
+        if (!lump_slots_pick_next(payload_buf)) {
+            /* 新しいデータがなければ、ackをハートビートとして再送する
+             * (この経路ではシーケンス番号は消費されない) */
+            memcpy(payload_buf, ack, LUMP_PAYLOAD_LEN);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10)); /* タスクウォッチドッグ対策(IDLEタスクに実行機会を渡す) */
+        uint8_t buf[LUMP_MSGBUF_MAX];
+        int n = lump_msg_build_cmd_or_data(buf, LUMP_MSG_DATA, LUMP_MODE_0, payload_buf, LUMP_PAYLOAD_LEN);
+        uart_write_bytes(LUMP_UART_NUM, (const char *)buf, n);
+
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(10));
     }
+
+    s_tx_task_handle = NULL;
+    xSemaphoreGive(s_stage_done_sem);
+    vTaskDelete(NULL);
+}
+
+static void data_phase(void) 
+{
+    init_hw_uart();
+    ESP_LOGI(TAG, "entering data phase (115200 baud, hardware UART)");
+
+    s_session_active = true;
+
+    xTaskCreate(lump_rx_task, "lump_rx", 4096, NULL, 10, &s_rx_task_handle);
+    xTaskCreate(lump_tx_task, "lump_tx", 4096, NULL, 10, &s_tx_task_handle);
+
+    /* RX/TX両タスクが終了する(ホストタイムアウトで再接続が必要になる)まで待つ */
+    xSemaphoreTake(s_stage_done_sem, portMAX_DELAY);
+    xSemaphoreTake(s_stage_done_sem, portMAX_DELAY);
+
+    uart_driver_delete(LUMP_UART_NUM);
 }
 
 /* ===================== タスク本体 ===================== */
 
-static void lump_device_task(void *arg) {
+static void lump_device_task(void *arg) 
+{
     while (1) {
         if (wait_for_connection()) {
             s_connected = true;
@@ -266,8 +315,9 @@ static void lump_device_task(void *arg) {
 
 /* ===================== 公開API ===================== */
 
-void lump_device_start(void) {
-    g_rx_mutex = xSemaphoreCreateMutex();
+void lump_device_start(void) 
+{
+    s_stage_done_sem = xSemaphoreCreateCounting(2, 0);
     lump_slots_init();
     lump_command_init();
     if (CONFIG_FREERTOS_NUMBER_OF_CORES > 1)
@@ -280,23 +330,21 @@ void lump_device_start(void) {
     }
 }
 
-bool lump_device_is_connected(void) {
+bool lump_device_is_connected(void) 
+{
     return s_connected;
 }
 
 void lump_device_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
-                         int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
+                         int16_t v1, int16_t v2, int16_t v3, int16_t v4) 
+{
     lump_slots_report(type, mode, sensorID, v1, v2, v3, v4);
 }
 
-void lump_device_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sequence, uint8_t sensorID,
-                         int16_t v1, int16_t v2, int16_t v3, int16_t v4) {
-    lump_slots_calib(type, mode, sequence, sensorID, v1, v2, v3, v4);
-}
-
-void lump_device_get_command(uint8_t out[LUMP_PAYLOAD_LEN]) {
-    if (xSemaphoreTake(g_rx_mutex, portMAX_DELAY) == pdTRUE) {
-        memcpy(out, g_rx_command, LUMP_PAYLOAD_LEN);
-        xSemaphoreGive(g_rx_mutex);
-    }
+/* シーケンス番号は送信時に共通カウンタから自動採番されるようになったため、
+ * このAPIから sequence 引数は削除した */
+void lump_device_calib(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
+                         int16_t v1, int16_t v2, int16_t v3, int16_t v4) 
+{
+    lump_slots_report(type, mode, sensorID, v1, v2, v3, v4);
 }

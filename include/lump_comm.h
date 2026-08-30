@@ -61,12 +61,6 @@ bool lump_device_is_connected(void);
 void lump_device_report(lump_sensor_type_t type, uint8_t mode, uint8_t sensorID,
                          int16_t v1, int16_t v2, int16_t v3, int16_t v4);
 
-/*
- * SPIKEから最後に書き込まれた値(コマンド)を読み出す。
- * out には LUMP_PAYLOAD_LEN バイト分の領域を渡すこと。
- */
-void lump_device_get_command(uint8_t out[LUMP_PAYLOAD_LEN]);
-
 #ifdef __cplusplus
 }
 #endif
